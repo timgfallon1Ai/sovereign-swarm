@@ -53,3 +53,62 @@ class AgentRegistry:
                 w = self.wrap_existing_agent(agent)
                 wrapped.append(w)
         return wrapped
+
+
+def bootstrap_default_registry() -> "AgentRegistry":
+    """Build an AgentRegistry populated with all production swarm agents.
+
+    Each agent is imported and instantiated lazily with graceful failure:
+    an agent that can't load (missing optional dependency, missing model,
+    etc.) is skipped with a warning rather than breaking the whole registry.
+
+    Used by the CLI `sovereign_swarm agents` command and any consumer that
+    wants the full default lineup.
+    """
+    registry = AgentRegistry()
+
+    # (import_path, class_name, kwargs) — kept as strings so ImportErrors
+    # from optional deps don't propagate until the entry is actually tried.
+    _entries: list[tuple[str, str, dict[str, Any]]] = [
+        ("sovereign_swarm.web_agent", "WebAgent", {}),
+        ("sovereign_swarm.scientist.agent", "ScientistAgent", {}),
+        ("sovereign_swarm.synesthesia.agent", "SynesthesiaAgent", {}),
+        ("sovereign_swarm.digital_twin.agent", "DigitalTwinAgent", {}),
+        ("sovereign_swarm.medical.agent", "MedicalAgent", {}),
+        ("sovereign_swarm.financial_ops.agent", "FinancialOpsAgent", {}),
+        ("sovereign_swarm.personal_finance.agent", "PersonalFinanceAgent", {}),
+        ("sovereign_swarm.legal.agent", "LegalAgent", {}),
+        ("sovereign_swarm.calendar.agent", "CalendarAgent", {}),
+        ("sovereign_swarm.content.agent", "ContentAgent", {}),
+        ("sovereign_swarm.curation.agent", "CurationAgent", {}),
+        ("sovereign_swarm.recruitment.agent", "RecruitmentAgent", {}),
+        ("sovereign_swarm.document_intel.agent", "DocumentIntelAgent", {}),
+        ("sovereign_swarm.competitive_intel.agent", "CompetitiveIntelAgent", {}),
+        ("sovereign_swarm.audit.agent", "AuditAgent", {}),
+        ("sovereign_swarm.monitoring.agent", "MonitoringAgent", {}),
+    ]
+
+    import importlib
+
+    for module_path, class_name, kwargs in _entries:
+        try:
+            module = importlib.import_module(module_path)
+            cls = getattr(module, class_name, None)
+            if cls is None:
+                logger.debug(
+                    "registry.bootstrap.class_missing",
+                    module=module_path,
+                    cls=class_name,
+                )
+                continue
+            agent = cls(**kwargs)
+            registry.register(agent)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "registry.bootstrap.skipped",
+                module=module_path,
+                cls=class_name,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+    return registry

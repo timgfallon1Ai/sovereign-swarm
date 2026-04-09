@@ -42,15 +42,16 @@ async def _cmd_status(args: argparse.Namespace) -> None:
 
 async def _cmd_agents(args: argparse.Namespace) -> None:
     """List registered agents."""
-    from sovereign_swarm.protocol.registry import AgentRegistry
+    from sovereign_swarm.protocol.registry import bootstrap_default_registry
 
     _print_header()
 
-    registry = AgentRegistry()
+    registry = bootstrap_default_registry()
     agents = registry.list_agents()
     if not agents:
-        print("No agents registered. Start the swarm runtime to populate.")
+        print("No agents registered (bootstrap skipped everything).")
         return
+    print(f"{len(agents)} agent(s) registered:\n")
     for card in agents:
         print(f"  {card.name} (v{card.version}) — {card.description}")
         if card.domains:
