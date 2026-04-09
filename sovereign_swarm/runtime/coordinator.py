@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -51,6 +52,43 @@ class SwarmCoordinator:
         self.checkpoint = checkpoint
         self._config = config or {}
         self._model = self._config.get("coordinator_model", "claude-sonnet-4-6-20250514")
+
+    @classmethod
+    def with_defaults(
+        cls,
+        checkpoint_db: str | Path | None = None,
+        config: dict[str, Any] | None = None,
+        max_concurrency: int = 5,
+    ) -> "SwarmCoordinator":
+        """Build a fully-wired SwarmCoordinator with the default agent lineup.
+
+        This is the one-liner entry point for any consumer (CLI, tests,
+        external integrations) that just wants a working swarm without
+        having to hand-construct the registry/executor/checkpoint chain.
+
+        The registry is populated by ``bootstrap_default_registry()``, which
+        loads every production agent that can be imported — including the
+        vision-capable ``web_agent`` (UI-TARS-1.5-7B-4bit MLX). Agents with
+        missing optional dependencies are skipped with a debug log line
+        rather than failing the whole bootstrap.
+        """
+        from sovereign_swarm.protocol.registry import bootstrap_default_registry
+
+        registry = bootstrap_default_registry()
+        checkpoint = CheckpointManager(
+            db_path=checkpoint_db or "data/checkpoints.db"
+        )
+        executor = TaskExecutor(
+            registry=registry,
+            checkpoint=checkpoint,
+            max_concurrency=max_concurrency,
+        )
+        return cls(
+            executor=executor,
+            registry=registry,
+            checkpoint=checkpoint,
+            config=config,
+        )
 
     # ------------------------------------------------------------------
     # Public API
