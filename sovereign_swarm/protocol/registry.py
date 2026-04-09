@@ -71,6 +71,7 @@ def bootstrap_default_registry() -> "AgentRegistry":
     # from optional deps don't propagate until the entry is actually tried.
     _entries: list[tuple[str, str, dict[str, Any]]] = [
         ("sovereign_swarm.web_agent", "WebAgent", {}),
+        ("sovereign_swarm.marketing", "MarketingAgent", {}),
         ("sovereign_swarm.scientist.agent", "ScientistAgent", {}),
         ("sovereign_swarm.synesthesia.agent", "SynesthesiaAgent", {}),
         ("sovereign_swarm.digital_twin.agent", "DigitalTwinAgent", {}),
