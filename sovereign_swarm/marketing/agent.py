@@ -29,6 +29,7 @@ from typing import Any
 import structlog
 
 from sovereign_swarm.marketing.brand import TENANTS, get_brand
+from sovereign_swarm.marketing.brief import CampaignBrief
 from sovereign_swarm.marketing.ensemble import (
     MarketingCampaignRequest,
     SovereignMarketingEnsemble,
@@ -68,6 +69,7 @@ class MarketingAgent(SwarmAgent):
             domains=["marketing", "content", "video", "ads", "campaigns"],
             supported_intents=[
                 "produce_campaign",
+                "produce_campaign_from_brief",
                 "generate_ad",
                 "generate_video_ad",
                 "list_tenants",
@@ -76,9 +78,14 @@ class MarketingAgent(SwarmAgent):
             ],
             capabilities=[
                 "video_campaign_production",
+                "brief_driven_production",
                 "tenant_brand_lookup",
                 "local_only_generation",
                 "multi_tenant",
+                "script_generation",
+                "still_image_generation",
+                "thumbnail_qa",
+                "publish_approval_gate",
             ],
         )
 
@@ -124,6 +131,37 @@ class MarketingAgent(SwarmAgent):
                 },
                 confidence=1.0,
             )
+
+        if intent in {"produce_campaign_from_brief", "produce_brief"}:
+            brief_data = params.get("brief")
+            if not brief_data:
+                return SwarmAgentResponse(
+                    agent_name="marketing",
+                    status="error",
+                    error="produce_campaign_from_brief requires 'brief' parameter",
+                )
+            try:
+                brief = CampaignBrief.from_dict(brief_data)
+            except (KeyError, ValueError) as exc:
+                return SwarmAgentResponse(
+                    agent_name="marketing",
+                    status="error",
+                    error=f"invalid brief: {exc}",
+                )
+            try:
+                result = self.ensemble.run_brief(brief)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "marketing.produce_campaign_from_brief_failed",
+                    tenant=brief.tenant,
+                    campaign_id=brief.campaign_id,
+                )
+                return SwarmAgentResponse(
+                    agent_name="marketing",
+                    status="error",
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            return self._format_campaign_response(result)
 
         if intent in {"produce_campaign", "generate_ad", "generate_video_ad"}:
             tenant = params.get("tenant")
@@ -175,39 +213,43 @@ class MarketingAgent(SwarmAgent):
                     error=f"{type(exc).__name__}: {exc}",
                 )
 
-            status = result.status  # "success" | "partial" | "error"
-            return SwarmAgentResponse(
-                agent_name="marketing",
-                status=status if status != "partial" else "success",
-                output=(
-                    f"{result.tenant} campaign {result.campaign_id}: "
-                    f"{status} in {result.total_duration_s:.1f}s"
-                ),
-                data={
-                    "tenant": result.tenant,
-                    "campaign_id": result.campaign_id,
-                    "output_dir": result.output_dir,
-                    "artifacts": result.artifacts,
-                    "stages": [
-                        {
-                            "stage": s.stage,
-                            "status": s.status,
-                            "duration_s": s.duration_s,
-                            "data": s.data,
-                            "error": s.error,
-                        }
-                        for s in result.stages
-                    ],
-                    "total_duration_s": result.total_duration_s,
-                    "total_cost_usd": result.total_cost_usd,
-                },
-                confidence=0.9 if status == "success" else 0.5,
-            )
+            return self._format_campaign_response(self.ensemble.run(req))
 
         return SwarmAgentResponse(
             agent_name="marketing",
             status="error",
             error=f"Unknown intent: {intent}",
+        )
+
+    @staticmethod
+    def _format_campaign_response(result) -> SwarmAgentResponse:  # type: ignore[no-untyped-def]
+        status = result.status  # "success" | "partial" | "error"
+        return SwarmAgentResponse(
+            agent_name="marketing",
+            status=status if status != "partial" else "success",
+            output=(
+                f"{result.tenant} campaign {result.campaign_id}: "
+                f"{status} in {result.total_duration_s:.1f}s"
+            ),
+            data={
+                "tenant": result.tenant,
+                "campaign_id": result.campaign_id,
+                "output_dir": result.output_dir,
+                "artifacts": result.artifacts,
+                "stages": [
+                    {
+                        "stage": s.stage,
+                        "status": s.status,
+                        "duration_s": s.duration_s,
+                        "data": s.data,
+                        "error": s.error,
+                    }
+                    for s in result.stages
+                ],
+                "total_duration_s": result.total_duration_s,
+                "total_cost_usd": result.total_cost_usd,
+            },
+            confidence=0.9 if status == "success" else 0.5,
         )
 
     @staticmethod

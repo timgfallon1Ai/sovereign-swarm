@@ -29,18 +29,70 @@ Design notes
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import json
 import logging
 import shutil
 import subprocess
+import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Awaitable, Callable, Mapping, Optional, TypeVar
+
+_T = TypeVar("_T")
+
+
+def _run_coroutine_sync(coro: Awaitable[_T]) -> _T:
+    """Run an async coroutine from synchronous code, robust to an already-running loop.
+
+    ``asyncio.run()`` cannot be called when a loop is already running in the
+    current thread (which happens under some pytest configurations and
+    nested-loop scenarios). This helper tries the fast path first and falls
+    back to running the coroutine in a dedicated worker thread with its own
+    fresh event loop.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # No running loop in this thread — safe to use asyncio.run directly.
+        return asyncio.run(coro)
+
+    # There's already a loop running here. Execute in a worker thread.
+    result_box: dict[str, Any] = {}
+
+    def _worker() -> None:
+        loop = asyncio.new_event_loop()
+        try:
+            result_box["value"] = loop.run_until_complete(coro)
+        except BaseException as exc:  # noqa: BLE001
+            result_box["error"] = exc
+        finally:
+            loop.close()
+
+    thread = threading.Thread(target=_worker, name="marketing-ensemble-async", daemon=True)
+    thread.start()
+    thread.join()
+    if "error" in result_box:
+        raise result_box["error"]
+    return result_box["value"]
 
 from sovereign_swarm.marketing.brand import TenantBrand, get_brand
+from sovereign_swarm.marketing.brief import CampaignBrief
+from sovereign_swarm.marketing.publish_gate import PublishGate, PublishRequest
+from sovereign_swarm.marketing.remotion_compose import RemotionComposerStage
+from sovereign_swarm.marketing.script_gen import (
+    MarketingScriptGenerator,
+    ScriptResult,
+)
+from sovereign_swarm.marketing.stills import FluxStillsStage, StillsResult
+from sovereign_swarm.marketing.thumbnail_qa import (
+    ThumbnailQAResult,
+    ThumbnailQAStage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -99,17 +151,41 @@ class MarketingCampaignResult:
 
 
 class SovereignMarketingEnsemble:
-    """Stateless pipeline driver for per-tenant marketing asset production."""
+    """Stateless pipeline driver for per-tenant marketing asset production.
+
+    Exposes two run modes:
+
+    * ``run(request)`` — Phase 1 mode. Takes a ``MarketingCampaignRequest``
+      with pre-written narration text + video prompt and drives the
+      narration → video → mux pipeline.
+    * ``run_brief(brief)`` — Phase 2 mode. Takes a structured
+      ``CampaignBrief``, uses Claude to generate the narration + video
+      prompt + still prompts + captions, then drives the full pipeline
+      including optional stills, Remotion composition, thumbnail QA,
+      and a publish-gate handshake.
+
+    Both modes share the same output layout and manifest format.
+    """
 
     def __init__(
         self,
         output_root: str | Path = "~/Documents/sovereign_marketing_runs",
         registry_loader: Optional[Callable[[], Any]] = None,
         ffmpeg_binary: Optional[str] = None,
+        script_generator: Optional[MarketingScriptGenerator] = None,
+        stills_stage: Optional[FluxStillsStage] = None,
+        thumbnail_qa_stage: Optional[ThumbnailQAStage] = None,
+        remotion_stage: Optional[RemotionComposerStage] = None,
+        publish_gate: Optional[PublishGate] = None,
     ) -> None:
         self.output_root = Path(str(output_root)).expanduser()
         self._registry_loader = registry_loader or _default_registry_loader
         self._ffmpeg = ffmpeg_binary or shutil.which("ffmpeg")
+        self._script_generator = script_generator
+        self._stills_stage = stills_stage
+        self._thumbnail_qa_stage = thumbnail_qa_stage
+        self._remotion_stage = remotion_stage
+        self._publish_gate = publish_gate
 
     # ------------------------------------------------------------------
     # Public API
@@ -148,6 +224,166 @@ class SovereignMarketingEnsemble:
         result.stages.append(stage)
         if stage.status == "success":
             result.artifacts["final"] = str(final_path)
+
+        result.total_duration_s = round(time.time() - t0, 2)
+        result.status = self._summarize_status(result.stages)
+        self._write_manifest(output_dir, result)
+        return result
+
+    def run_brief(self, brief: CampaignBrief) -> MarketingCampaignResult:
+        """Phase 2 entry point — full pipeline driven by a structured brief.
+
+        Pipeline:
+          1. Claude script generation  -> narration_text + video_prompt
+                                          + still_prompts + captions
+          2. VibeVoice narration (Phase 1)
+          3. Wan 2.2 MLX motion video (Phase 1)
+          4. FLUX still images (if brief.num_stills > 0)
+          5. Remotion composition (if brief.enable_remotion) or
+             ffmpeg-loop mux fallback
+          6. UI-TARS thumbnail QA (if brief.enable_thumbnail_qa)
+          7. Publish-gate handshake (if brief.require_publish_approval)
+
+        Any stage failure is captured in the stage log and the pipeline
+        continues as far as it can. The final ``status`` is ``success``
+        if every critical stage (narration, video, final) succeeded,
+        ``partial`` if some artifacts were produced, ``error`` otherwise.
+        """
+        brand = get_brand(brief.tenant)
+        # Build a synthetic request so _prepare_output_dir reuses existing layout
+        synthetic = MarketingCampaignRequest(
+            tenant=brief.tenant,
+            campaign_id=brief.campaign_id,
+            narration_text="",  # filled by script-gen stage below
+            video_prompt="",
+            duration_seconds=brief.duration_seconds,
+            resolution=brief.resolution,
+            notes=brief.notes,
+        )
+        output_dir = self._prepare_output_dir(brand, synthetic)
+        t0 = time.time()
+        result = MarketingCampaignResult(
+            tenant=brand.key,
+            campaign_id=brief.campaign_id,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            output_dir=str(output_dir),
+            brand=asdict(brand),
+        )
+
+        # Stage 1: script generation (Claude)
+        script_stage, script = self._run_script_gen(brief, brand)
+        result.stages.append(script_stage)
+        if script_stage.status != "success" or script is None:
+            # No script -> cannot continue meaningfully. Finalize and return.
+            result.total_duration_s = round(time.time() - t0, 2)
+            result.status = "error"
+            self._write_manifest(output_dir, result)
+            return result
+
+        # Persist the script package alongside the campaign for auditability
+        (output_dir / "script.json").write_text(
+            json.dumps(
+                {
+                    "narration_text": script.narration_text,
+                    "video_prompt": script.video_prompt,
+                    "still_prompts": script.still_prompts,
+                    "captions": script.captions,
+                    "rationale": script.rationale,
+                    "warnings": script.warnings,
+                    "model": script.model,
+                },
+                indent=2,
+            )
+        )
+
+        # Stage 2: narration
+        narration_path = output_dir / "narration.wav"
+        narration_request = MarketingCampaignRequest(
+            tenant=brief.tenant,
+            campaign_id=brief.campaign_id,
+            narration_text=script.narration_text or "",
+            video_prompt=script.video_prompt or "",
+        )
+        stage = self._run_narration(brand, narration_request, narration_path)
+        result.stages.append(stage)
+        if stage.status == "success":
+            result.artifacts["narration"] = str(narration_path)
+
+        # Stage 3: motion video
+        video_path = output_dir / "motion.mp4"
+        video_request = MarketingCampaignRequest(
+            tenant=brief.tenant,
+            campaign_id=brief.campaign_id,
+            narration_text=script.narration_text or "",
+            video_prompt=script.video_prompt or "",
+            resolution=brief.resolution,
+            num_frames=synthetic.num_frames,
+            steps=synthetic.steps,
+            seed=synthetic.seed,
+        )
+        stage = self._run_video(brand, video_request, video_path)
+        result.stages.append(stage)
+        if stage.status == "success":
+            result.artifacts["video"] = str(video_path)
+
+        # Stage 4: still images (optional)
+        if brief.num_stills > 0 and script.still_prompts:
+            stage, stills_result = self._run_stills(
+                brand,
+                script.still_prompts[: brief.num_stills],
+                output_dir,
+            )
+            result.stages.append(stage)
+            if stills_result is not None:
+                for i, s in enumerate(stills_result.stills):
+                    if s.output_path:
+                        result.artifacts[f"still_{i}"] = s.output_path
+
+        # Stage 5: final composition — Remotion if requested, else ffmpeg mux
+        final_path = output_dir / "final.mp4"
+        if brief.enable_remotion:
+            stage = self._run_remotion(
+                video_path=video_path,
+                audio_path=narration_path,
+                output_path=final_path,
+                brand=brand,
+                captions=script.captions,
+                still_paths=[
+                    p for k, p in result.artifacts.items() if k.startswith("still_")
+                ],
+                title_text=None,
+            )
+            result.stages.append(stage)
+            # Fall back to ffmpeg mux if Remotion was skipped / errored
+            if stage.status != "success":
+                mux_stage = self._run_mux(narration_path, video_path, final_path)
+                result.stages.append(mux_stage)
+        else:
+            stage = self._run_mux(narration_path, video_path, final_path)
+            result.stages.append(stage)
+        if final_path.exists():
+            result.artifacts["final"] = str(final_path)
+
+        # Stage 6: thumbnail QA (optional)
+        if brief.enable_thumbnail_qa and final_path.exists():
+            stage = self._run_thumbnail_qa(
+                video_path=final_path,
+                output_dir=output_dir,
+                brand=brand,
+            )
+            result.stages.append(stage)
+            qa_thumb = output_dir / "qa_thumbnail.png"
+            if qa_thumb.exists():
+                result.artifacts["qa_thumbnail"] = str(qa_thumb)
+
+        # Stage 7: publish-gate handshake (optional)
+        if brief.require_publish_approval and final_path.exists():
+            stage = self._run_publish_gate(
+                output_dir=output_dir,
+                brief=brief,
+                result_artifacts=dict(result.artifacts),
+            )
+            result.stages.append(stage)
 
         result.total_duration_s = round(time.time() - t0, 2)
         result.status = self._summarize_status(result.stages)
@@ -335,6 +571,241 @@ class SovereignMarketingEnsemble:
             status="success",
             duration_s=round(time.time() - t0, 2),
             output=str(output_path),
+        )
+
+    # ------------------------------------------------------------------
+    # Phase 2 stage implementations
+    # ------------------------------------------------------------------
+
+    def _run_script_gen(
+        self, brief: CampaignBrief, brand: TenantBrand
+    ) -> tuple[StageLog, Optional[ScriptResult]]:
+        t0 = time.time()
+        gen = self._script_generator
+        if gen is None:
+            return (
+                StageLog(
+                    stage="script_gen",
+                    status="error",
+                    duration_s=round(time.time() - t0, 2),
+                    error=(
+                        "no script generator configured. Pass "
+                        "script_generator=MarketingScriptGenerator(client=...) "
+                        "to SovereignMarketingEnsemble()."
+                    ),
+                ),
+                None,
+            )
+        try:
+            script = _run_coroutine_sync(gen.generate(brief, brand))
+        except Exception as exc:  # noqa: BLE001
+            return (
+                StageLog(
+                    stage="script_gen",
+                    status="error",
+                    duration_s=round(time.time() - t0, 2),
+                    error=f"{type(exc).__name__}: {exc}",
+                ),
+                None,
+            )
+        stage_status = "success" if script.success else "error"
+        return (
+            StageLog(
+                stage="script_gen",
+                status=stage_status,
+                duration_s=round(time.time() - t0, 2),
+                output=None,
+                data={
+                    "model": script.model,
+                    "input_tokens": script.input_tokens,
+                    "output_tokens": script.output_tokens,
+                    "rationale": script.rationale,
+                    "warnings": script.warnings,
+                    "still_prompt_count": len(script.still_prompts),
+                    "caption_count": len(script.captions),
+                },
+                error=script.error if not script.success else None,
+            ),
+            script,
+        )
+
+    def _run_stills(
+        self,
+        brand: TenantBrand,
+        still_prompts: list[str],
+        output_dir: Path,
+    ) -> tuple[StageLog, Optional[StillsResult]]:
+        t0 = time.time()
+        stage_impl = self._stills_stage or FluxStillsStage(
+            negative_prompt=brand.negative_prompt
+        )
+        try:
+            result = stage_impl.run(
+                prompts=still_prompts,
+                output_dir=output_dir,
+                brand_negative_prompt=brand.negative_prompt,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return (
+                StageLog(
+                    stage="stills",
+                    status="error",
+                    duration_s=round(time.time() - t0, 2),
+                    error=f"{type(exc).__name__}: {exc}",
+                ),
+                None,
+            )
+        stage_status_map = {
+            "success": "success",
+            "partial": "success",
+            "skipped": "skipped",
+            "disabled": "skipped",
+            "error": "error",
+        }
+        return (
+            StageLog(
+                stage="stills",
+                status=stage_status_map.get(result.status, "error"),
+                duration_s=round(time.time() - t0, 2),
+                data={
+                    "model": result.model,
+                    "requested": len(still_prompts),
+                    "successful": result.success_count,
+                    "per_still": [
+                        {
+                            "index": s.index,
+                            "status": s.status,
+                            "output_path": s.output_path,
+                            "error": s.error,
+                        }
+                        for s in result.stills
+                    ],
+                },
+                error=result.error,
+            ),
+            result,
+        )
+
+    def _run_remotion(
+        self,
+        video_path: Path,
+        audio_path: Path,
+        output_path: Path,
+        brand: TenantBrand,
+        captions: list[str],
+        still_paths: list[str],
+        title_text: Optional[str],
+    ) -> StageLog:
+        t0 = time.time()
+        stage_impl = self._remotion_stage or RemotionComposerStage()
+        try:
+            result = stage_impl.run(
+                video_path=video_path,
+                audio_path=audio_path,
+                output_path=output_path,
+                brand=brand,
+                captions=captions,
+                still_paths=still_paths,
+                title_text=title_text,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return StageLog(
+                stage="remotion",
+                status="error",
+                duration_s=round(time.time() - t0, 2),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        return StageLog(
+            stage="remotion",
+            status=result.status,  # "success" | "skipped" | "error"
+            duration_s=round(time.time() - t0, 2),
+            output=result.output_path,
+            data={
+                "composition_id": result.composition_id,
+                "stderr_tail": result.stderr_tail,
+            },
+            error=result.error,
+        )
+
+    def _run_thumbnail_qa(
+        self,
+        video_path: Path,
+        output_dir: Path,
+        brand: TenantBrand,
+    ) -> StageLog:
+        t0 = time.time()
+        stage_impl = self._thumbnail_qa_stage or ThumbnailQAStage()
+        try:
+            result = stage_impl.run(
+                video_path=video_path,
+                output_dir=output_dir,
+                brand_display_name=brand.display_name,
+                brand_negative_prompt=brand.negative_prompt,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return StageLog(
+                stage="thumbnail_qa",
+                status="error",
+                duration_s=round(time.time() - t0, 2),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        status_map = {
+            "success": "success",
+            "flagged": "success",  # flagged is still a successful QA run
+            "skipped": "skipped",
+            "error": "error",
+        }
+        return StageLog(
+            stage="thumbnail_qa",
+            status=status_map.get(result.status, "error"),
+            duration_s=round(time.time() - t0, 2),
+            output=result.thumbnail_path,
+            data={
+                "qa_status": result.status,
+                "issues": result.issues,
+                "confidence": result.confidence,
+                "model": result.model,
+                "qa_text": result.qa_text,
+            },
+            error=result.error,
+        )
+
+    def _run_publish_gate(
+        self,
+        output_dir: Path,
+        brief: CampaignBrief,
+        result_artifacts: dict[str, str],
+    ) -> StageLog:
+        t0 = time.time()
+        gate = self._publish_gate or PublishGate()
+        try:
+            req = gate.request_approval(
+                output_dir=output_dir,
+                tenant=brief.tenant,
+                campaign_id=brief.campaign_id,
+                artifacts=result_artifacts,
+                platforms=[p.value for p in brief.platforms],
+                owner=brief.owner,
+                notes=brief.notes,
+            )
+            state = gate.check_approval(output_dir, req)
+        except Exception as exc:  # noqa: BLE001
+            return StageLog(
+                stage="publish_gate",
+                status="error",
+                duration_s=round(time.time() - t0, 2),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        return StageLog(
+            stage="publish_gate",
+            status="success",
+            duration_s=round(time.time() - t0, 2),
+            output=str(output_dir / PublishGate.REQUEST_FILENAME),
+            data={
+                "approval_state": state.state,
+                "approval_token_length": len(req.approval_token),
+                "platforms": list(req.platforms),
+            },
         )
 
     # ------------------------------------------------------------------

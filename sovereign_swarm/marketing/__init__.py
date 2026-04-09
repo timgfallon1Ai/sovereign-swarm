@@ -21,18 +21,64 @@ key; the ensemble loads the brand at request time.
 
 from sovereign_swarm.marketing.agent import MarketingAgent
 from sovereign_swarm.marketing.brand import TenantBrand, TENANTS, get_brand
+from sovereign_swarm.marketing.brief import (
+    CampaignBrief,
+    CampaignObjective,
+    Platform,
+)
 from sovereign_swarm.marketing.ensemble import (
     MarketingCampaignRequest,
     MarketingCampaignResult,
     SovereignMarketingEnsemble,
 )
+from sovereign_swarm.marketing.publish_gate import (
+    PublishApprovalState,
+    PublishGate,
+    PublishRequest,
+)
+from sovereign_swarm.marketing.remotion_compose import (
+    RemotionComposerStage,
+    RemotionResult,
+)
+from sovereign_swarm.marketing.script_gen import (
+    MarketingScriptGenerator,
+    ScriptResult,
+)
+from sovereign_swarm.marketing.stills import (
+    FluxStillsStage,
+    StillResult,
+    StillsResult,
+)
+from sovereign_swarm.marketing.thumbnail_qa import (
+    ThumbnailQAResult,
+    ThumbnailQAStage,
+)
 
 __all__ = [
+    # Agent
     "MarketingAgent",
+    # Core pipeline
     "SovereignMarketingEnsemble",
     "MarketingCampaignRequest",
     "MarketingCampaignResult",
+    # Brand + brief
     "TenantBrand",
     "TENANTS",
     "get_brand",
+    "CampaignBrief",
+    "CampaignObjective",
+    "Platform",
+    # Phase 2 stages
+    "MarketingScriptGenerator",
+    "ScriptResult",
+    "FluxStillsStage",
+    "StillResult",
+    "StillsResult",
+    "ThumbnailQAStage",
+    "ThumbnailQAResult",
+    "RemotionComposerStage",
+    "RemotionResult",
+    "PublishGate",
+    "PublishRequest",
+    "PublishApprovalState",
 ]
