@@ -44,7 +44,7 @@ class RecruitmentAgent(SwarmAgent):
     @property
     def card(self) -> SwarmAgentCard:
         return SwarmAgentCard(
-            name="RecruitmentAgent",
+            name="recruitment",
             description=(
                 "Recruitment and HR agent -- job postings, resume screening, "
                 "interview scheduling, candidate pipeline, and onboarding "

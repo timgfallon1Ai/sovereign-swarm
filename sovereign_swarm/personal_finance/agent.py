@@ -39,7 +39,7 @@ class PersonalFinanceAgent(SwarmAgent):
     @property
     def card(self) -> SwarmAgentCard:
         return SwarmAgentCard(
-            name="PersonalFinanceAgent",
+            name="personal_finance",
             description=(
                 "Personal finance agent -- net worth tracking, budget management, "
                 "financial goal progress, bill reminders, and spending analysis."

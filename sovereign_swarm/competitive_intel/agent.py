@@ -43,7 +43,7 @@ class CompetitiveIntelAgent(SwarmAgent):
     @property
     def card(self) -> SwarmAgentCard:
         return SwarmAgentCard(
-            name="CompetitiveIntelAgent",
+            name="competitive_intel",
             description=(
                 "Competitive intelligence agent -- monitors competitors, "
                 "analyzes market positioning, compares pricing and SEO, "

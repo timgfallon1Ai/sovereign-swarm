@@ -84,7 +84,8 @@ def bootstrap_default_registry() -> "AgentRegistry":
         ("sovereign_swarm.recruitment.agent", "RecruitmentAgent", {}),
         ("sovereign_swarm.document_intel.agent", "DocumentIntelAgent", {}),
         ("sovereign_swarm.competitive_intel.agent", "CompetitiveIntelAgent", {}),
-        ("sovereign_swarm.audit.agent", "AuditAgent", {}),
+        # NOTE: sovereign_swarm.audit currently has store.py only, no agent.py.
+        # Re-add this entry when AuditAgent is implemented.
         ("sovereign_swarm.monitoring.agent", "MonitoringAgent", {}),
     ]
 

@@ -42,7 +42,7 @@ class ContentAgent(SwarmAgent):
     @property
     def card(self) -> SwarmAgentCard:
         return SwarmAgentCard(
-            name="ContentAgent",
+            name="content",
             description=(
                 "Content creation agent -- generates blog posts, social media "
                 "content, email sequences, product descriptions, and content "
