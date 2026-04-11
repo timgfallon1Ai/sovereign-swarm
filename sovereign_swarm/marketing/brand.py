@@ -51,6 +51,49 @@ class TenantBrand:
 
 
 TENANTS: Mapping[str, TenantBrand] = {
+    "sovereign": TenantBrand(
+        key="sovereign",
+        display_name="Sovereign",
+        tagline="Your data. Your intelligence. Your sovereignty.",
+        one_liner=(
+            "Sovereign is a private AI operating system that runs every "
+            "automatable function of your business — sales, marketing, "
+            "inventory, accounting, staffing — through a single voice or "
+            "text interface, without ever touching your data."
+        ),
+        target_audience=(
+            "small business owners doing $2-20M annual revenue who are "
+            "paying $2-5K/month for fragmented tools that don't talk to "
+            "each other and want a unified, private AI operating system."
+        ),
+        tone_keywords=(
+            "sovereign",
+            "private",
+            "operator-grade",
+            "battle-tested",
+            "founder-built",
+        ),
+        palette=("#0b0f14", "#d4a94a", "#faf8f5", "#1c2028"),  # near-black, gold, warm white, dark charcoal
+        voice_name="Carter",  # en-Carter_man — confident, founder energy
+        negative_prompt=(
+            "corporate stock imagery, fake smiles, generic SaaS dashboard "
+            "screenshots, bright saturated colors, cartoon, watermark, "
+            "text, logo overlay, cheap, gimmicky, hype"
+        ),
+        default_duration_seconds=120,
+        default_resolution=(1280, 704),
+        default_aspect_ratio="16:9",
+        cta_template="Start your diagnostic pilot at {domain}",
+        domain="svrnmind.ai",
+        notes=(
+            "Master brand voice: founder-operator authority, not corporate "
+            "marketing. Speak as someone who built this to run his own "
+            "businesses, not as a SaaS vendor. Emphasize privacy as "
+            "architecture, not policy. Emphasize customer-zero credibility. "
+            "Never use hype language. Never promise AI magic. Position as "
+            "operator-grade infrastructure, not a tool or an app."
+        ),
+    ),
     "atx_mats": TenantBrand(
         key="atx_mats",
         display_name="ATX Mats",
@@ -92,40 +135,42 @@ TENANTS: Mapping[str, TenantBrand] = {
     ),
     "gbb": TenantBrand(
         key="gbb",
-        display_name="Green Bear Brand",
-        tagline="Family-owned. AI-assisted. Built to last.",
+        display_name="Gracie Barra Buda",
+        tagline="Jiu-Jitsu for Everyone.",
         one_liner=(
-            "Green Bear Brand is Tim Fallon's parent holding for the "
-            "Sovereign ecosystem — an AI-first family-owned operator "
-            "of manufacturing and e-commerce businesses."
+            "Gracie Barra Buda is a family-friendly Brazilian "
+            "Jiu-Jitsu academy in Buda, Texas, offering kids and "
+            "adult programs with world-class instruction."
         ),
         target_audience=(
-            "enterprise partners, family-office LPs, and prospective "
-            "customers evaluating GBB as a long-term vendor who won't "
-            "disappear in a funding crunch."
+            "families in Buda/Kyle/South Austin looking for martial "
+            "arts training, parents enrolling kids ages 4-15, adults "
+            "seeking fitness and self-defense, and competitors "
+            "training for tournaments."
         ),
         tone_keywords=(
-            "principled",
-            "long-horizon",
-            "family-owned",
-            "AI-native",
-            "understated",
+            "welcoming",
+            "community",
+            "family-friendly",
+            "discipline",
+            "growth",
         ),
-        palette=("#0f3b2e", "#d4a850", "#f7f3e9", "#2a5e4c"),  # deep forest, gold, cream, moss
+        palette=("#1E40AF", "#DC2626", "#FFFFFF", "#1E3A8A"),  # GB blue, GB red, white, dark blue
         voice_name="Frank",  # en-Frank_man — steady, measured
         negative_prompt=(
-            "corporate stock imagery, hype, forced smiles, flashy "
-            "transitions, bright saturated colors, cartoon, watermark"
+            "violence, blood, aggressive fighting, corporate stock "
+            "imagery, flashy transitions, cartoon, watermark"
         ),
-        default_duration_seconds=45,
+        default_duration_seconds=30,
         default_resolution=(1280, 704),
         default_aspect_ratio="16:9",
-        cta_template="Learn more at {domain}",
-        domain="greenbear.ai",
+        cta_template="Start your free trial at {domain}",
+        domain="gbbuda.com",
         notes=(
-            "Parent-brand voice: focus on longevity, principle, and "
-            "AI-assisted craftsmanship across the family portfolio. "
-            "Avoid product-specific claims; GBB is a holding brand."
+            "Gracie Barra is a global BJJ franchise. Buda location "
+            "is owned by Professor Tim Fallon. Emphasize community, "
+            "family training together, belt progression, and the GB "
+            "methodology. Use real GB brand colors (blue/red/white)."
         ),
     ),
     "gli": TenantBrand(
