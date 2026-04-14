@@ -88,6 +88,8 @@ def bootstrap_default_registry() -> "AgentRegistry":
         # NOTE: sovereign_swarm.audit currently has store.py only, no agent.py.
         # Re-add this entry when AuditAgent is implemented.
         ("sovereign_swarm.monitoring.agent", "MonitoringAgent", {}),
+        ("sovereign_swarm.strategic_intel.agent", "StrategicIntelAgent", {}),
+        ("sovereign_swarm.sales_ops.agent", "SalesOpsAgent", {}),
     ]
 
     import importlib

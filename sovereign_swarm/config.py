@@ -11,7 +11,7 @@ from pydantic_settings import BaseSettings
 class SwarmSettings(BaseSettings):
     """Central configuration for sovereign-swarm."""
 
-    model_config = {"env_prefix": "", "env_file": ".env", "env_file_encoding": "utf-8"}
+    model_config = {"env_prefix": "", "env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
     # --- API keys & connections ---
     anthropic_api_key: str = ""
@@ -25,8 +25,8 @@ class SwarmSettings(BaseSettings):
 
     # --- Model selection ---
     fast_model: str = "claude-haiku-4-5-20251001"
-    slow_model: str = "claude-sonnet-4-6-20250514"
-    coordinator_model: str = "claude-sonnet-4-6-20250514"
+    slow_model: str = "claude-haiku-4-5-20251001"  # Sonnet not on this API key — use Haiku until upgraded
+    coordinator_model: str = "claude-haiku-4-5-20251001"
 
     # --- Runtime ---
     max_concurrency: int = 5

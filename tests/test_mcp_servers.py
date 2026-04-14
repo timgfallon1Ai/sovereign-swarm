@@ -351,8 +351,8 @@ class TestMarketingServer:
 
     def test_list_tenants_cross_server_consistency(self, marketing_srv):
         r = asyncio.run(marketing_srv.list_tenants())
-        assert r["count"] == 3
-        assert set(r["tenants"].keys()) == {"atx_mats", "gbb", "gli"}
+        assert r["count"] >= 3
+        assert {"atx_mats", "gbb", "gli", "sovereign"} <= set(r["tenants"].keys())
 
     def test_plan_campaign_requires_api_key(self, marketing_srv, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)

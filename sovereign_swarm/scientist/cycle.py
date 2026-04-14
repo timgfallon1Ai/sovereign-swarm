@@ -40,6 +40,78 @@ class ResearchCycleManager:
         self.reporter = reporter
         self.ingest = ingest_bridge
 
+    async def run_program(self, program_path: str) -> ResearchReport:
+        """Run a research cycle from a program.md file.
+
+        Karpathy autoresearch pattern: Markdown-driven experiment
+        orchestration. The program.md defines hypotheses, experiments,
+        success criteria, and iteration rules declaratively.
+        """
+        from sovereign_swarm.scientist.program import load_program
+
+        spec = load_program(program_path)
+        logger.info(
+            "scientist.run_program",
+            title=spec.title,
+            hypotheses=len(spec.hypotheses),
+            experiments=len(spec.experiments),
+        )
+
+        cycle = ResearchCycle(
+            research_question=spec.question,
+            max_iterations=spec.max_iterations,
+        )
+
+        # Use program-defined hypotheses instead of generating
+        cycle.hypotheses = spec.hypotheses
+
+        # Use program-defined experiments instead of designing
+        if spec.experiments:
+            cycle.experiments = spec.experiments
+            # Run each experiment
+            for exp in spec.experiments:
+                exp_hyp = next(
+                    (h for h in spec.hypotheses if h.id == exp.hypothesis_id),
+                    None,
+                )
+                result = await self.runner.run(exp)
+                cycle.results.append(result)
+
+                # Analyze if we have a hypothesis to analyze against
+                if exp_hyp:
+                    hypothesis_results = [
+                        r for r in cycle.results
+                        if any(
+                            e.hypothesis_id == exp_hyp.id and e.id == r.experiment_id
+                            for e in cycle.experiments
+                        )
+                    ]
+                    analysis = await self.analyzer.analyze(exp_hyp, hypothesis_results)
+                    exp_hyp.status = HypothesisStatus(analysis["verdict"])
+                    exp_hyp.confidence = analysis["confidence"]
+        else:
+            # No experiments defined — fall back to standard cycle
+            return await self.run(spec.question, spec.max_iterations)
+
+        cycle.status = ResearchCycleStatus.COMPLETED
+        report = await self.reporter.generate(cycle)
+        cycle.report = report
+
+        if self.ingest and self.ingest.available:
+            markdown = self.reporter.to_markdown(report)
+            await self.ingest.inject_document(
+                title=report.title,
+                content=markdown,
+                source="scientist_program",
+                metadata={
+                    "cycle_id": cycle.id,
+                    "program": spec.source_path or "inline",
+                    "question": spec.question,
+                },
+            )
+
+        return report
+
     async def run(
         self, question: str, max_iterations: int = 3
     ) -> ResearchReport:

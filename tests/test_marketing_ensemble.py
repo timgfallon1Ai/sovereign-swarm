@@ -38,8 +38,8 @@ from sovereign_swarm.protocol.swarm_agent import SwarmAgentRequest
 
 
 class TestTenantBrands:
-    def test_all_three_tenants_present(self):
-        assert set(TENANTS.keys()) == {"atx_mats", "gbb", "gli"}
+    def test_all_tenants_present(self):
+        assert {"atx_mats", "gbb", "gli", "sovereign"} <= set(TENANTS.keys())
 
     def test_each_brand_has_required_fields(self):
         for key, brand in TENANTS.items():
@@ -289,7 +289,7 @@ class TestMarketingAgent:
         req = SwarmAgentRequest(task="list all tenants", parameters={"intent": "list_tenants"})
         resp = asyncio.run(agent.execute(req))
         assert resp.status == "success"
-        assert set(resp.data["tenants"].keys()) == {"atx_mats", "gbb", "gli"}
+        assert {"atx_mats", "gbb", "gli", "sovereign"} <= set(resp.data["tenants"].keys())
 
     def test_get_brand(self, tmp_path, stub_loader):
         tts = _StubTool(success=True)

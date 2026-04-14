@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any
 
 import structlog
@@ -75,12 +76,32 @@ def _extract_error_type(error: str) -> str:
 
 
 class FastLearner:
-    """System 1 — immediate learning from task outcomes."""
+    """System 1 — immediate learning from task outcomes.
 
-    def __init__(self, patch_store: SkillPatchStore, config: Any = None):
+    Enhanced with Hermes-Agent auto-skill materialization: after tasks
+    exceeding a tool-call threshold, automatically writes a Markdown
+    skill doc capturing the approach, edge cases, and domain knowledge.
+    These docs are stored in a skill_docs/ directory alongside the
+    SQLite patch store and can be retrieved by future tasks via FTS.
+    """
+
+    # Auto-skill materialization threshold: tasks with >= this many
+    # tool calls get a skill doc written automatically.
+    SKILL_DOC_TOOL_CALL_THRESHOLD = 5
+
+    def __init__(
+        self,
+        patch_store: SkillPatchStore,
+        config: Any = None,
+        skill_docs_dir: str | Path | None = None,
+    ):
         self.store = patch_store
         self.config = config
         self._anthropic = None  # lazy init
+        self._skill_docs_dir = Path(
+            str(skill_docs_dir or "data/skill_docs")
+        ).expanduser()
+        self._skill_docs_dir.mkdir(parents=True, exist_ok=True)
 
     def _get_client(self):
         """Lazy-init Anthropic client."""
@@ -145,6 +166,77 @@ class FastLearner:
         if patch:
             await self.store.store(patch)
         return patch
+
+    async def materialize_skill_doc(
+        self,
+        agent_name: str,
+        task: str,
+        approach: str,
+        tool_calls: int,
+        outcome: str = "success",
+        edge_cases: str = "",
+    ) -> str | None:
+        """Auto-write a Markdown skill doc after complex task completion.
+
+        Hermes-Agent pattern: after N+ tool-call tasks, capture the
+        approach as a reusable document. Returns the file path if
+        written, None if below threshold.
+        """
+        if tool_calls < self.SKILL_DOC_TOOL_CALL_THRESHOLD:
+            return None
+
+        import hashlib
+        from datetime import datetime
+
+        # Generate a stable filename from agent + task
+        task_hash = hashlib.sha256(f"{agent_name}:{task}".encode()).hexdigest()[:8]
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        filename = f"{agent_name}_{task_hash}_{timestamp}.md"
+        path = self._skill_docs_dir / filename
+
+        doc = (
+            f"---\n"
+            f"agent: {agent_name}\n"
+            f"task_summary: {task[:200]}\n"
+            f"outcome: {outcome}\n"
+            f"tool_calls: {tool_calls}\n"
+            f"created: {datetime.utcnow().isoformat()}\n"
+            f"---\n\n"
+            f"# Skill: {task[:100]}\n\n"
+            f"## Approach\n{approach}\n\n"
+        )
+        if edge_cases:
+            doc += f"## Edge Cases\n{edge_cases}\n\n"
+        doc += (
+            f"## Metadata\n"
+            f"- Agent: {agent_name}\n"
+            f"- Tool calls: {tool_calls}\n"
+            f"- Outcome: {outcome}\n"
+        )
+
+        path.write_text(doc)
+        logger.info(
+            "fast_learner.skill_doc_materialized",
+            agent=agent_name,
+            path=str(path),
+            tool_calls=tool_calls,
+        )
+        return str(path)
+
+    def search_skill_docs(self, query: str, limit: int = 5) -> list[dict[str, str]]:
+        """Simple keyword search over materialized skill docs."""
+        query_words = set(query.lower().split())
+        scored: list[tuple[int, Path]] = []
+        for doc_path in self._skill_docs_dir.glob("*.md"):
+            content = doc_path.read_text().lower()
+            overlap = sum(1 for w in query_words if w in content)
+            if overlap > 0:
+                scored.append((overlap, doc_path))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        results = []
+        for _, p in scored[:limit]:
+            results.append({"path": str(p), "content": p.read_text()[:500]})
+        return results
 
     def get_patches_for_task(
         self,

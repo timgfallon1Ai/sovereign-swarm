@@ -82,6 +82,7 @@ def _run_coroutine_sync(coro: Awaitable[_T]) -> _T:
 
 from sovereign_swarm.marketing.brand import TenantBrand, get_brand
 from sovereign_swarm.marketing.brief import CampaignBrief
+from sovereign_swarm.marketing.canva_stage import CanvaDesignStage
 from sovereign_swarm.marketing.publish_gate import PublishGate, PublishRequest
 from sovereign_swarm.marketing.remotion_compose import RemotionComposerStage
 from sovereign_swarm.marketing.script_gen import (
@@ -177,6 +178,7 @@ class SovereignMarketingEnsemble:
         thumbnail_qa_stage: Optional[ThumbnailQAStage] = None,
         remotion_stage: Optional[RemotionComposerStage] = None,
         publish_gate: Optional[PublishGate] = None,
+        canva_stage: Optional[CanvaDesignStage] = None,
     ) -> None:
         self.output_root = Path(str(output_root)).expanduser()
         self._registry_loader = registry_loader or _default_registry_loader
@@ -186,6 +188,7 @@ class SovereignMarketingEnsemble:
         self._thumbnail_qa_stage = thumbnail_qa_stage
         self._remotion_stage = remotion_stage
         self._publish_gate = publish_gate
+        self._canva_stage = canva_stage
 
     # ------------------------------------------------------------------
     # Public API
@@ -376,7 +379,22 @@ class SovereignMarketingEnsemble:
             if qa_thumb.exists():
                 result.artifacts["qa_thumbnail"] = str(qa_thumb)
 
-        # Stage 7: publish-gate handshake (optional)
+        # Stage 7: Canva design generation (optional)
+        if self._canva_stage and script:
+            stage = self._run_canva_design(
+                brand=brand,
+                campaign_id=brief.campaign_id,
+                headline=script.narration_text[:80] if script.narration_text else brief.campaign_id,
+                body_text=script.rationale or "",
+                platforms=[p.value for p in brief.platforms] if brief.platforms else ["instagram"],
+                output_dir=output_dir,
+            )
+            result.stages.append(stage)
+            canva_req_path = output_dir / "canva_request.json"
+            if canva_req_path.exists():
+                result.artifacts["canva_request"] = str(canva_req_path)
+
+        # Stage 8: publish-gate handshake (optional)
         if brief.require_publish_approval and final_path.exists():
             stage = self._run_publish_gate(
                 output_dir=output_dir,
@@ -807,6 +825,56 @@ class SovereignMarketingEnsemble:
                 "platforms": list(req.platforms),
             },
         )
+
+    def _run_canva_design(
+        self,
+        brand: TenantBrand,
+        campaign_id: str,
+        headline: str,
+        body_text: str,
+        platforms: list[str],
+        output_dir: Path,
+    ) -> StageLog:
+        """Generate Canva design requests for each target platform."""
+        t0 = time.time()
+        stage = self._canva_stage
+        if stage is None:
+            return StageLog(
+                stage="canva_design",
+                status="skipped",
+                duration_s=round(time.time() - t0, 2),
+                error="no canva_stage configured",
+            )
+        try:
+            # Generate for first platform (primary asset)
+            platform = platforms[0] if platforms else "instagram"
+            result = stage.run(
+                brand=brand,
+                campaign_id=campaign_id,
+                headline=headline,
+                body_text=body_text,
+                platform=platform,
+                output_dir=output_dir,
+            )
+            return StageLog(
+                stage="canva_design",
+                status="success" if result.status in ("created", "pending") else "error",
+                duration_s=round(time.time() - t0, 2),
+                output=result.edit_url,
+                data={
+                    "canva_status": result.status,
+                    "design_id": result.design_id,
+                    "platform": platform,
+                },
+                error=result.error,
+            )
+        except Exception as exc:
+            return StageLog(
+                stage="canva_design",
+                status="error",
+                duration_s=round(time.time() - t0, 2),
+                error=f"{type(exc).__name__}: {exc}",
+            )
 
     # ------------------------------------------------------------------
     # Helpers
