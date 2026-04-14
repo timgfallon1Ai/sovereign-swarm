@@ -454,13 +454,29 @@ def create_tenant_api_router(
 
 
 def create_inbound_webhook_router(state: TenantAPIState) -> APIRouter:
-    """Separate router for inbound webhooks (not under /api/crm/*)."""
+    """Separate router for inbound webhooks (not under /api/crm/*).
+
+    CRITICAL — AUTO-REPLY POLICY (2026-04-14 incident):
+
+    This router is SAFE by design: the default `InboundRouter.handle()` path
+    creates a Case and (if applicable) pauses active sequences — it does
+    NOT generate or send an auto-reply. Any Case reply goes through the
+    existing approval queue, where a human approves before send.
+
+    If a tenant adds an auto-reply branch to this path (e.g. "send
+    confirmation when a new quote request comes in"), that branch MUST
+    call `sovereign_swarm.inbound.publish_gate.decide()` BEFORE sending
+    and only proceed when `decision.action == GateAction.SEND`. Blocked
+    decisions should be logged with the decision metadata so the Outbox
+    UI surfaces them.
+    """
     router = APIRouter()
 
     @router.post("/sendgrid-inbound")
     async def sendgrid_inbound(payload: dict[str, Any]):
         inbound = parse_sendgrid_webhook(payload)
         result = await state.inbound_router.handle(inbound, tenant=state.tenant_key)
+        # NOTE: no auto-reply here. All inbound creates a Case for human review.
         return result
 
     return router
