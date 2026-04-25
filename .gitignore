@@ -41,3 +41,10 @@ htmlcov/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Security: never commit credentials (added 2026-04-25 after history scrub)
+.env.bak
+.env.*.bak
+config/google_oauth_credentials.json
+config/*credentials*.json
+config/*secrets*.json
